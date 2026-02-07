@@ -7,7 +7,29 @@ Ensure you have Python installed (version 3.8+ recommended).
 Install the required dependencies:
 
 ```bash
-pip install streamlit pandas numpy yfinance scikit-learn xgboost torch plotly
+pip install -r requirements.txt
+```
+
+## AI Insights (RAG) Setup
+
+To use the "AI Insights" feature, you need **Ollama** installed locally.
+
+### 1. Install Ollama
+Download and install from: [https://ollama.com/](https://ollama.com/)
+
+### 2. Configure Model (Phi-3)
+We utilize the **Phi-3** model (optimized for performance). You can set it up automatically using our script:
+
+**PowerShell:**
+```powershell
+./scripts/init_ollama.ps1
+```
+*This script sets the `OLLAMA_MODELS` environment variable (to `D:\ai-ml-base\ollama_models`) and pulls the `phi3` model.*
+
+### 3. Run Ollama
+Before starting the dashboard, ensure Ollama is serving:
+```bash
+ollama serve
 ```
 
 ## Project Structure
@@ -16,13 +38,15 @@ pip install streamlit pandas numpy yfinance scikit-learn xgboost torch plotly
 Projects/
 ├── src/                # Source code
 │   ├── dashboard.py    # Main dashboard application
-│   └── stock_model.py  # Model logic and data fetching
+│   ├── stock_model.py  # Model logic and data fetching
+│   └── rag_engine.py   # RAG Logic (Ollama + ChromaDB)
 ├── scripts/            # Utility and test scripts
+│   ├── init_ollama.ps1 # Setup script for Ollama
 │   ├── check_indian_stocks.py
-│   ├── debug_yf.py
 │   └── ...
 ├── data/               # Data files (ignored by git)
 ├── docs/               # Documentation
+│   ├── rag_architecture.md # RAG pipeline details
 │   ├── model_math.md   # Mathematical details
 │   └── setup_steps.md  # This file
 └── .gitignore
@@ -40,6 +64,7 @@ streamlit run src/dashboard.py
 ```
 
 The dashboard will open in your default web browser.
+*Note: Go to the "AI Insights" tab to test the RAG features.*
 
 ## Running Utility Scripts
 
