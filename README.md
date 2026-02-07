@@ -9,7 +9,10 @@ An advanced stock analysis dashboard that leverages Machine Learning (Random For
     *   **Standard ML**: Random Forest, XGBoost, Logistic Regression.
     *   **Deep Learning**: LSTM and GRU neural networks for sequential pattern recognition.
     *   **Ensemble**: Stacked and Voting ensembles for robust predictions.
-*   **Technical Analysis**: Automatically calculates RSI, MACD, Bollinger Bands, and ATR.
+*   **AI Insights (RAG)**:
+    *   **Hybrid Intelligence**: Combines quantitative data with qualitative news analysis.
+    *   **Local Privacy**: Runs entirely offline using **Ollama (Phi-3)** and **ChromaDB**.
+    *   **Multi-Source**: Aggregates news from Yahoo Finance and DuckDuckGo.
 *   **Cross-Platform**:
     *   **NVIDIA GPUs**: Accelerated via CUDA.
     *   **Apple Silicon**: Accelerated via MPS (Metal Performance Shaders).
