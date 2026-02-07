@@ -23,7 +23,9 @@ An advanced stock analysis dashboard that leverages Machine Learning (Random For
 1.  **Clone the repository**.
 2.  **Install dependencies**:
     ```bash
-    pip install streamlit pandas numpy yfinance scikit-learn xgboost torch plotly
+    ```bash
+    pip install -r requirements.txt
+    ```
     ```
 
 ## Usage

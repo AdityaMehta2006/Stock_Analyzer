@@ -4,11 +4,9 @@
 
 Ensure you have Python installed (version 3.8+ recommended).
 
-Install the required dependencies:
+Ensure you have Python installed (version 3.8+ recommended).
 
-```bash
-pip install -r requirements.txt
-```
+Please refer to the **README.md** for basic dependency installation (`pip install -r requirements.txt`).
 
 ## AI Insights (RAG) Setup
 
