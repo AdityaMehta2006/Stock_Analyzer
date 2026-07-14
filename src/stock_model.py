@@ -193,10 +193,12 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     
     # Cleanup
     df_clean = df.dropna()
-    
-    # Failsafe for small data
+
+    # Failsafe for small data.
+    # NOTE: forward-fill only. bfill would pull future values backward into
+    # earlier rows (look-ahead leakage), so it is intentionally avoided here.
     if df_clean.empty and n_rows > 15:
-        df_clean = df.fillna(method='bfill').fillna(method='ffill').dropna()
+        df_clean = df.ffill().dropna()
 
     if df_clean.empty:
         raise ValueError(f"Effective data too small after indicator calculation. Input: {n_rows} rows.")
@@ -222,16 +224,18 @@ def train_predict_deep(df: pd.DataFrame, predictors: List[str], model_arch: str 
     else:
         device = torch.device('cpu')
     
-    # Scaling
+    # Split FIRST, then scale — fitting the scaler on the whole series would
+    # leak test-period mean/std into the training normalization (look-ahead).
     from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(df[predictors])
-    
-    # Split
     split_idx = int(len(df) * 0.8)
-    train_data = scaled_features[:split_idx]
-    test_data = scaled_features[split_idx:]
-    
+
+    train_raw = df[predictors].iloc[:split_idx]
+    test_raw = df[predictors].iloc[split_idx:]
+
+    scaler = StandardScaler()
+    train_data = scaler.fit_transform(train_raw)   # fit on train only
+    test_data = scaler.transform(test_raw)         # apply to test
+
     train_target = df[target_col].iloc[:split_idx]
     test_target = df[target_col].iloc[split_idx:]
     
@@ -277,34 +281,103 @@ def train_predict_deep(df: pd.DataFrame, predictors: List[str], model_arch: str 
     
     return model, precision, preds_series, probs_series, df.loc[actual_test_idx], predictors
 
+def get_predictors(df: pd.DataFrame) -> List[str]:
+    """Selects available feature columns for training (shared by all trainers)."""
+    potential_cols = [
+        "Close", "Volume", "Open", "High", "Low", "MA50", "MA200",
+        "RSI", "MACD", "BB_Upper", "BB_Lower", "ATR",
+        "Trend_SMA50", "Trend_SMA200", "BB_Width", "Vol_Ratio",
+        "Lag_1", "Lag_2", "Lag_5"
+    ]
+    return [c for c in potential_cols if c in df.columns]
+
+
+def build_standard_model(model_type: str, scale_weight: float = 1.0, random_state: int = 1) -> Any:
+    """Constructs a fresh (unfitted) standard sklearn/xgboost estimator."""
+    if model_type == "Random Forest":
+        return RandomForestClassifier(n_estimators=200, min_samples_split=50, random_state=random_state, class_weight="balanced")
+    elif model_type == "XGBoost":
+        return XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05, scale_pos_weight=scale_weight, eval_metric='logloss', random_state=random_state)
+    elif model_type == "Logistic Regression":
+        return LogisticRegression(class_weight="balanced", random_state=random_state, max_iter=1000)
+    elif model_type == "Stacked Ensemble":
+        estimators = [
+            ('rf', RandomForestClassifier(n_estimators=100, min_samples_split=50, random_state=random_state, class_weight="balanced")),
+            ('xgb', XGBClassifier(n_estimators=100, max_depth=3, scale_pos_weight=scale_weight, eval_metric='logloss', random_state=random_state))
+        ]
+        return StackingClassifier(estimators=estimators, final_estimator=LogisticRegression(), cv=3)
+    raise ValueError(f"Unknown standard model type: {model_type}")
+
+
+def walk_forward_validate(df: pd.DataFrame, model_type: str = "XGBoost", n_splits: int = 5, random_state: int = 1) -> dict:
+    """
+    Honest time-series evaluation via expanding-window walk-forward validation.
+
+    Unlike a single train/test split, TimeSeriesSplit trains on an expanding
+    past window and always tests on the chronologically-following block, never
+    on future-then-past data. Returns mean/std precision across folds so the
+    reported metric reflects stability, not one lucky split.
+
+    Only supports the standard (non-sequential) models. Deep/Voting models are
+    evaluated in train_predict.
+    """
+    from sklearn.model_selection import TimeSeriesSplit
+
+    if model_type not in ("Random Forest", "XGBoost", "Logistic Regression", "Stacked Ensemble"):
+        raise ValueError(f"walk_forward_validate does not support '{model_type}'.")
+
+    predictors = get_predictors(df)
+    n_rows = len(df)
+
+    # Cap splits so every fold has a usable train size.
+    max_splits = max(2, min(n_splits, n_rows // 30))
+    tscv = TimeSeriesSplit(n_splits=max_splits)
+
+    fold_scores: List[float] = []
+    for train_idx, test_idx in tscv.split(df):
+        train = df.iloc[train_idx]
+        test = df.iloc[test_idx]
+
+        n_pos = train["Target"].sum()
+        n_neg = len(train) - n_pos
+        scale_weight = n_neg / n_pos if n_pos > 0 else 1
+
+        model = build_standard_model(model_type, scale_weight, random_state)
+        model.fit(train[predictors], train["Target"])
+        preds = model.predict(test[predictors])
+        fold_scores.append(precision_score(test["Target"], preds, zero_division=0))
+
+    scores = np.array(fold_scores)
+    return {
+        "mean_precision": float(scores.mean()),
+        "std_precision": float(scores.std()),
+        "n_splits": int(max_splits),
+        "fold_scores": [float(s) for s in scores],
+    }
+
+
 def train_predict(df: pd.DataFrame, model_type: str = "Random Forest", random_state: int = 1, enable_tuning: bool = False) -> Tuple[Any, float, pd.Series, pd.Series, pd.DataFrame, List[str]]:
     """
     Main training interface supporting standard and deep learning models.
     """
     n_rows = len(df)
-    
+
     # Data Splitting Logic
     # Modified to use 20% split for medium datasets (was fixed at 100) to improve evaluation robustness
-    if n_rows > 2000: 
+    if n_rows > 2000:
         split_idx = -252 # 1 Year for very large datasets
-    else: 
+    else:
         split_idx = -int(n_rows * 0.2) # 20% for everything else
-    
+
     # Safety floor
-    if abs(split_idx) < 5: split_idx = -5 
-    
+    if abs(split_idx) < 5: split_idx = -5
+
     train = df.iloc[:split_idx]
     test = df.iloc[split_idx:]
-    
+
     # Dynamic Predictor Selection
-    potential_cols = [
-        "Close", "Volume", "Open", "High", "Low", "MA50", "MA200", 
-        "RSI", "MACD", "BB_Upper", "BB_Lower", "ATR",
-        "Trend_SMA50", "Trend_SMA200", "BB_Width", "Vol_Ratio",
-        "Lag_1", "Lag_2", "Lag_5"
-    ]
-    predictors = [c for c in potential_cols if c in df.columns]
-    
+    predictors = get_predictors(df)
+
     # --- Deep Learning Branch ---
     if "LSTM" in model_type and "Voting" not in model_type:
         return train_predict_deep(df, predictors, model_arch="LSTM")
@@ -349,19 +422,8 @@ def train_predict(df: pd.DataFrame, model_type: str = "Random Forest", random_st
     n_pos = train["Target"].sum()
     n_neg = len(train) - n_pos
     scale_weight = n_neg / n_pos if n_pos > 0 else 1
-    
-    if model_type == "Random Forest":
-        model = RandomForestClassifier(n_estimators=200, min_samples_split=50, random_state=random_state, class_weight="balanced")
-    elif model_type == "XGBoost":
-        model = XGBClassifier(n_estimators=200, max_depth=5, learning_rate=0.05, scale_pos_weight=scale_weight, eval_metric='logloss', random_state=random_state)
-    elif model_type == "Logistic Regression":
-        model = LogisticRegression(class_weight="balanced", random_state=random_state, max_iter=1000)
-    elif model_type == "Stacked Ensemble":
-        estimators = [
-            ('rf', RandomForestClassifier(n_estimators=100, min_samples_split=50, random_state=random_state, class_weight="balanced")),
-            ('xgb', XGBClassifier(n_estimators=100, max_depth=3, scale_pos_weight=scale_weight, eval_metric='logloss', random_state=random_state))
-        ]
-        model = StackingClassifier(estimators=estimators, final_estimator=LogisticRegression(), cv=3)
+
+    model = build_standard_model(model_type, scale_weight, random_state)
 
     model.fit(train[predictors], train["Target"])
     
