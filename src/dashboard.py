@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from stock_model import fetch_data, add_features, train_predict, preprocess_custom_data
+from stock_model import fetch_data, add_features, train_predict, preprocess_custom_data, walk_forward_validate
 from rag_engine import StockRAGEngine
 import datetime
 from datetime import timedelta
@@ -133,7 +133,19 @@ with tab1:
                     model, precision, preds, probs, test_data, predictors = train_predict(
                         df, model_type=model_type, random_state=random_seed, enable_tuning=enable_tuning
                     )
-                
+
+                    # Walk-forward cross-validation (honest metric across folds).
+                    # Only the standard non-sequential models are supported.
+                    WF_SUPPORTED = {"Random Forest", "XGBoost", "Logistic Regression", "Stacked Ensemble"}
+                    wf_result = None
+                    if model_type in WF_SUPPORTED:
+                        try:
+                            wf_result = walk_forward_validate(
+                                df, model_type=model_type, n_splits=5, random_state=random_seed
+                            )
+                        except Exception as wf_err:
+                            wf_result = {"error": str(wf_err)}
+
                     # --- BENTO GRID LAYOUT ---
                     st.divider()
                     st.subheader(f"Dashboard: {ticker}")
@@ -150,8 +162,22 @@ with tab1:
                     daily_change = last_close - prev_close
                     
                     k1.metric("Last Price", f"{last_close:.2f}", f"{daily_change:.2f}")
-                    k2.metric("Model Precision", f"{precision:.2%}", "Test Accuracy")
-                    
+
+                    if wf_result and "mean_precision" in wf_result:
+                        # Show the walk-forward mean as the headline precision, with
+                        # the single-split value as the (typically optimistic) delta.
+                        k2.metric(
+                            "Precision (Walk-Fwd)",
+                            f"{wf_result['mean_precision']:.2%}",
+                            f"±{wf_result['std_precision']:.2%} std",
+                            help="Mean precision across expanding-window time-series folds. "
+                                 "More honest than a single split, which tends to be optimistic.",
+                        )
+                    else:
+                        k2.metric("Model Precision", f"{precision:.2%}", "Single split",
+                                  help="Walk-forward CV is only available for standard ML models "
+                                       "(not deep learning / voting).")
+
                     current_prob = probs.iloc[-1]
                     if current_prob > 0.60:
                         sig_text, sig_color = "STRONG BUY", "normal"
@@ -162,7 +188,18 @@ with tab1:
                         
                     k3.metric("Signal", sig_text, delta=f"{current_prob:.1%} Conf.", help="Strong Buy: >60% Probability\nWeak Buy: >50%\nNeutral/Sell: <50%")
                     k4.metric("Dataset Size", f"{len(df)} Rows", f"{len(test_data)} Tested")
-                    
+
+                    # Walk-forward detail: expose the fold spread so the headline
+                    # metric is transparent, not a black box.
+                    if wf_result and "fold_scores" in wf_result:
+                        folds_str = " · ".join(f"{s:.0%}" for s in wf_result["fold_scores"])
+                        st.caption(
+                            f"Walk-forward CV ({wf_result['n_splits']} folds): {folds_str}  |  "
+                            f"Single-split precision: {precision:.2%}"
+                        )
+                    elif wf_result and "error" in wf_result:
+                        st.caption(f"Walk-forward CV unavailable: {wf_result['error']}")
+
                     # ROW 2: Main Chart + Gauge
                     g1, g2 = st.columns([3, 1])
                     
